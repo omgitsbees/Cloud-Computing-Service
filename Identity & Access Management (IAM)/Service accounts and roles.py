@@ -98,3 +98,109 @@ class ServiceAccount:
         """Add role to service account"""
         self.roles.add(role_id)
         self.updated_at = datetime.now()
+        
+    def remove_role(self, role_id: str):
+        """Remove role from service account"""
+        self.roles.discard(role_id)
+        self.updated_at = datetime.now()
+        
+        def is_expired(self) -> bool:
+            """Check if service account is expired"""
+            if self.expires_at:
+                return datetime.now() > self.expires_at 
+            return False
+        
+    
+    class TokenType(Enum):
+        """Token types for different authentication methods"""
+        JWT = "jwt"
+        API_KEY = "api_key"
+        CLIENT_CREDENTIALS = "client_credentials"
+        
+        
+    @dataclass 
+    class AccessToken:
+        """Access token for autneticated requests"""
+        token: str 
+        token_type: TokenType 
+        subject: str # User ID or Service Account ID 
+        subject_type: str # "user" or "service_account"
+        roles: Set[str]
+        expires_at: datetime 
+        issued_at: datetime = field(default_factory=datetime.now)
+        scope: Optional[str] = None 
+        
+        
+class RoleManager: 
+    """Manages roles and permissions"""
+    
+    def __init__(self):
+        self.roles: Dict[str, Role] = {}
+        self._initiialize_system_roles()
+        
+    def _initialize_system_roles(self):
+        """Create default system roles"""
+        # Admin role - full access
+        admin_role = Role(
+            id="admin",
+            name="Administrator",
+            description="Full system access",
+            is_system_role=True 
+        )
+        admin_role.add_permission(Permission(ResourceType.SYSTEM, "*", PermissionAction.ADMIN))
+        admin_role.add_permission(Permission(ResourceType.USER, "*", PermissionAction.ADMIN))
+        admin_role.add_permission(Permission(ResourceType.SERVICE, "*", PermissionAction.ADMIN))
+        admin_role.add_permission(Permission(ResourceType.DATA, "*", PermissionAction.ADMIN))
+        admin_role.add_permission(Permission(ResourceType.CONFIG, "*", PermissionAction.ADMIN))
+        self.roles[admin_role.id] = admin_role 
+        
+        # Read-only role
+        readonly_role = Role(
+            id="readonly",
+            name="Read Only",
+            description="Read-only access to resources",
+            is_system_role=True
+        )
+        readonly_role.add_permission(Permission(ResourceType.DATA, "*" PermissionAction.Read))
+        readonly_role.add_permission(Permission(ResourceType.CONFIG, "*", PermissionAction.READ))
+        self.role[readonly_role.id] = readonly_role 
+        
+        # Service role for API access 
+        service_role = Role(
+            id="service",
+            name="Service",
+            description="Service-to-service communication",
+            is_system_role=True 
+        )
+        service_role.add_permission(Permission(ResourceType.SERVICE, "*", PermissionAction.READ))
+        service_role.add_permission(Permission(ResourceType.DATA, "*", PermissionAction.READ))
+        service_role.add_permission(Permission(ResourceType.DATA, "*", PermissionAction.WRITE))
+        self.roles[service_role.id] = service_role 
+        
+    def create_role(self, name: str, description: str, permissions: List[Permission] = None) -> Role: 
+        """Create a new role"""
+        role_id = str(uuid.uuid4())
+        role = Role(
+            id=role_id,
+            name=name,
+            description=description
+        )
+        
+        if permissions:
+            for perm in permissions:
+                role.add_permission(perm)
+                
+        self.roles[role_id] = role 
+        return role 
+    
+    def get_role(self, role_id: str) -> Optional[Role]:
+        """Get role by ID"""
+        return self.roles.get(role_id)
+    
+    def delete_role(self, role_id: str) -> bool:
+        """Delete role (cannot delete system roles)"""
+        role = self.roles.get(role_id)
+        if role and not role.is_system_role:
+            del self.roles[role_id]
+            return True 
+        return False
