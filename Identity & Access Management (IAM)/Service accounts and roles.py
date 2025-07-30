@@ -204,3 +204,197 @@ class RoleManager:
             del self.roles[role_id]
             return True 
         return False
+    
+    def list_roles(self) -> List[Role]:
+        """List all roles"""
+        return list(self.roles.values())
+
+
+class ServiceAccountManager:
+    """Manages service accounts"""
+    
+    def __init__(self, role_manager: RoleManager):
+        self.service_accounts: Dict[str, ServiceAccount] = {}
+        self.role_manager = role_manager
+        self.client_id_to_account: Dict[str, str] = {}  # client_id -> account_id mapping
+    
+    def create_service_account(self, name: str, description: str, 
+                             expires_in_days: Optional[int] = None) -> tuple[ServiceAccount, str]:
+        """Create a new service account and return it with the client secret"""
+        account_id = str(uuid.uuid4())
+        client_id = f"sa_{secrets.token_urlsafe(16)}"
+        client_secret = secrets.token_urlsafe(32)
+        client_secret_hash = hashlib.sha256(client_secret.encode()).hexdigest()
+        
+        expires_at = None
+        if expires_in_days:
+            expires_at = datetime.now() + timedelta(days=expires_in_days)
+        
+        service_account = ServiceAccount(
+            id=account_id,
+            name=name,
+            description=description,
+            client_id=client_id,
+            client_secret_hash=client_secret_hash,
+            expires_at=expires_at,
+            api_key=f"sk_{secrets.token_urlsafe(24)}"
+        )
+        
+        self.service_accounts[account_id] = service_account
+        self.client_id_to_account[client_id] = account_id
+        
+        return service_account, client_secret
+    
+    def get_service_account(self, account_id: str) -> Optional[ServiceAccount]:
+        """Get service account by ID"""
+        return self.service_accounts.get(account_id)
+    
+    def get_service_account_by_client_id(self, client_id: str) -> Optional[ServiceAccount]:
+        """Get service account by client ID"""
+        account_id = self.client_id_to_account.get(client_id)
+        return self.service_accounts.get(account_id) if account_id else None
+    
+    def authenticate_service_account(self, client_id: str, client_secret: str) -> Optional[ServiceAccount]:
+        """Authenticate service account with client credentials"""
+        account = self.get_service_account_by_client_id(client_id)
+        
+        if not account:
+            return None
+        
+        if not account.is_active or account.is_expired():
+            return None
+        
+        # Verify client secret
+        secret_hash = hashlib.sha256(client_secret.encode()).hexdigest()
+        if secret_hash != account.client_secret_hash:
+            return None
+        
+        # Update last used timestamp
+        account.last_used = datetime.now()
+        return account
+    
+    def authenticate_api_key(self, api_key: str) -> Optional[ServiceAccount]:
+        """Authenticate service account with API key"""
+        for account in self.service_accounts.values():
+            if account.api_key == api_key and account.is_active and not account.is_expired():
+                account.last_used = datetime.now()
+                return account
+        return None
+    
+    def assign_role_to_service_account(self, account_id: str, role_id: str) -> bool:
+        """Assign role to service account"""
+        account = self.get_service_account(account_id)
+        role = self.role_manager.get_role(role_id)
+        
+        if account and role:
+            account.add_role(role_id)
+            return True
+        return False
+    
+    def revoke_role_from_service_account(self, account_id: str, role_id: str) -> bool:
+        """Revoke role from service account"""
+        account = self.get_service_account(account_id)
+        if account:
+            account.remove_role(role_id)
+            return True
+        return False
+    
+    def deactivate_service_account(self, account_id: str) -> bool:
+        """Deactivate service account"""
+        account = self.get_service_account(account_id)
+        if account:
+            account.is_active = False
+            account.updated_at = datetime.now()
+            return True
+        return False
+    
+    def list_service_accounts(self) -> List[ServiceAccount]:
+        """List all service accounts"""
+        return list(self.service_accounts.values())
+
+
+class TokenManager:
+    """Manages access tokens"""
+    
+    def __init__(self, role_manager: RoleManager):
+        self.role_manager = role_manager
+        self.active_tokens: Dict[str, AccessToken] = {}
+        
+        # Generate RSA key pair for JWT signing
+        self.private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048
+        )
+        self.public_key = self.private_key.public_key()
+    
+    def create_jwt_token(self, subject: str, subject_type: str, roles: Set[str], 
+                        expires_in_seconds: int = 3600) -> AccessToken:
+        """Create JWT access token"""
+        now = datetime.now()
+        expires_at = now + timedelta(seconds=expires_in_seconds)
+        
+        payload = {
+            'sub': subject,
+            'sub_type': subject_type,
+            'roles': list(roles),
+            'iat': int(now.timestamp()),
+            'exp': int(expires_at.timestamp()),
+            'jti': str(uuid.uuid4())
+        }
+        
+        # Sign JWT with private key
+        private_pem = self.private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        
+        token = jwt.encode(payload, private_pem, algorithm='RS256')
+        
+        access_token = AccessToken(
+            token=token,
+            token_type=TokenType.JWT,
+            subject=subject,
+            subject_type=subject_type,
+            roles=roles,
+            expires_at=expires_at
+        )
+        
+        self.active_tokens[payload['jti']] = access_token
+        return access_token
+    
+    def verify_jwt_token(self, token: str) -> Optional[AccessToken]:
+        """Verify and decode JWT token"""
+        try:
+            public_pem = self.public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            
+            payload = jwt.decode(token, public_pem, algorithms=['RS256'])
+            
+            # Check if token is still active
+            jti = payload.get('jti')
+            if jti not in self.active_tokens:
+                return None
+            
+            access_token = self.active_tokens[jti]
+            
+            # Check expiration
+            if datetime.now() > access_token.expires_at:
+                del self.active_tokens[jti]
+                return None
+            
+            return access_token
+            
+        except jwt.InvalidTokenError:
+            return None
+    
+    def revoke_token(self, token: str) -> bool:
+        """Revoke access token"""
+        try:
+            public_pem = self.public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            
