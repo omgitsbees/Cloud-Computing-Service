@@ -204,7 +204,7 @@ class RoleManager:
             del self.roles[role_id]
             return True 
         return False
-    
+      
     def list_roles(self) -> List[Role]:
         """List all roles"""
         return list(self.roles.values())
@@ -398,3 +398,103 @@ class TokenManager:
                 format=serialization.PublicFormat.SubjectPublicKeyInfo
             )
             
+            payload = jwt.decode(token, public_pem, algorithms=['RS256'], options={"verify_exp": False})
+            jti = payload.get('jti')
+            
+            if jti in self.active_tokens:
+                del self.active_tokens[jti]
+                return True
+                
+        except jwt.InvalidTokenError:
+            pass
+        
+        return False
+
+
+class AccessControlManager:
+    """Main access control manager combining all components"""
+    
+    def __init__(self):
+        self.role_manager = RoleManager()
+        self.service_account_manager = ServiceAccountManager(self.role_manager)
+        self.token_manager = TokenManager(self.role_manager)
+    
+    def check_permission(self, subject: str, subject_type: str, 
+                        resource_type: ResourceType, resource_id: str, 
+                        action: PermissionAction) -> bool:
+        """Check if subject has permission for action on resource"""
+        
+        # Get subject's roles
+        roles = set()
+        if subject_type == "service_account":
+            account = self.service_account_manager.get_service_account(subject)
+            if account:
+                roles = account.roles
+        # Add user role checking here when integrating with user management
+        
+        # Check permissions across all roles
+        for role_id in roles:
+            role = self.role_manager.get_role(role_id)
+            if role and role.has_permission(resource_type, resource_id, action):
+                return True
+        
+        return False
+    
+    def authenticate_and_authorize(self, auth_header: str) -> Optional[AccessToken]:
+        """Authenticate request and return access token if valid"""
+        if not auth_header:
+            return None
+        
+        # Handle Bearer token (JWT)
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            return self.token_manager.verify_jwt_token(token)
+        
+        # Handle API Key
+        elif auth_header.startswith("ApiKey "):
+            api_key = auth_header[7:]
+            account = self.service_account_manager.authenticate_api_key(api_key)
+            if account:
+                # Create temporary token for this request
+                return AccessToken(
+                    token=api_key,
+                    token_type=TokenType.API_KEY,
+                    subject=account.id,
+                    subject_type="service_account",
+                    roles=account.roles,
+                    expires_at=datetime.now() + timedelta(hours=1)
+                )
+        
+        return None
+
+
+# Example usage and testing
+if __name__ == "__main__":
+    # Initialize the access control system
+    acm = AccessControlManager()
+    
+    print("=== Service Accounts and Roles Management System ===\n")
+    
+    # 1. Create custom roles
+    print("1. Creating custom roles...")
+    
+    # Data analyst role
+    data_permissions = [
+        Permission(ResourceType.DATA, "*", PermissionAction.READ),
+        Permission(ResourceType.DATA, "analytics_*", PermissionAction.WRITE)
+    ]
+    analyst_role = acm.role_manager.create_role(
+        "Data Analyst", 
+        "Can read all data and write to analytics datasets",
+        data_permissions
+    )
+    print(f"Created role: {analyst_role.name} ({analyst_role.id})")
+    
+    # API service role
+    api_permissions = [
+        Permission(ResourceType.SERVICE, "*", PermissionAction.READ),
+        Permission(ResourceType.DATA, "public_*", PermissionAction.READ)
+    ]
+    api_role = acm.role_manager.create_role(
+        "API Service",
+        "Public API access role",
