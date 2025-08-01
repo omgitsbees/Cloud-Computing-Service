@@ -498,3 +498,119 @@ if __name__ == "__main__":
     api_role = acm.role_manager.create_role(
         "API Service",
         "Public API access role",
+        api_permissions
+    )
+    print(f"Created role: {api_role.name} ({api_role.id})")
+    
+    # 2. Create service accounts
+    print("\n2. Creating service accounts...")
+    
+    # Analytics service account
+    analytics_sa, analytics_secret = acm.service_account_manager.create_service_account(
+        "Analytics Service",
+        "Service account for data analytics pipeline",
+        expires_in_days=365
+    )
+    print(f"Created service account: {analytics_sa.name}")
+    print(f"  Client ID: {analytics_sa.client_id}")
+    print(f"  API Key: {analytics_sa.api_key}")
+    print(f"  Secret: {analytics_secret[:8]}... (truncated)")
+    
+    # API gateway service account  
+    api_sa, api_secret = acm.service_account_manager.create_service_account(
+        "API Gateway",
+        "Service account for API gateway",
+        expires_in_days=90
+    )
+    print(f"Created service account: {api_sa.name}")
+    print(f"  Client ID: {api_sa.client_id}")
+    
+    # 3. Assign roles to service accounts
+    print("\n3. Assigning roles to service accounts...")
+    
+    acm.service_account_manager.assign_role_to_service_account(analytics_sa.id, analyst_role.id)
+    acm.service_account_manager.assign_role_to_service_account(analytics_sa.id, "readonly")
+    print(f"Assigned roles to {analytics_sa.name}: Data Analyst, Read Only")
+    
+    acm.service_account_manager.assign_role_to_service_account(api_sa.id, api_role.id)
+    acm.service_account_manager.assign_role_to_service_account(api_sa.id, "service")
+    print(f"Assigned roles to {api_sa.name}: API Service, Service")
+    
+    # 4. Test authentication
+    print("\n4. Testing authentication...")
+    
+    # Test client credentials authentication
+    auth_result = acm.service_account_manager.authenticate_service_account(
+        analytics_sa.client_id, 
+        analytics_secret
+    )
+    print(f"Client credentials auth: {'SUCCESS' if auth_result else 'FAILED'}")
+    
+    # Test API key authentication
+    api_auth_result = acm.service_account_manager.authenticate_api_key(analytics_sa.api_key)
+    print(f"API key auth: {'SUCCESS' if api_auth_result else 'FAILED'}")
+    
+    # 5. Generate and test JWT tokens
+    print("\n5. Testing JWT tokens...")
+    
+    if auth_result:
+        # Create JWT token for authenticated service account
+        jwt_token = acm.token_manager.create_jwt_token(
+            subject=auth_result.id,
+            subject_type="service_account",
+            roles=auth_result.roles,
+            expires_in_seconds=3600
+        )
+        print(f"Generated JWT token (expires: {jwt_token.expires_at})")
+        
+        # Verify the token
+        verified_token = acm.token_manager.verify_jwt_token(jwt_token.token)
+        print(f"JWT verification: {'SUCCESS' if verified_token else 'FAILED'}")
+    
+    # 6. Test authorization
+    print("\n6. Testing authorization...")
+    
+    # Test various permission checks
+    test_cases = [
+        (analytics_sa.id, "service_account", ResourceType.DATA, "analytics_report", PermissionAction.WRITE),
+        (analytics_sa.id, "service_account", ResourceType.DATA, "user_data", PermissionAction.READ),
+        (analytics_sa.id, "service_account", ResourceType.SYSTEM, "config", PermissionAction.ADMIN),
+        (api_sa.id, "service_account", ResourceType.DATA, "public_info", PermissionAction.READ),
+        (api_sa.id, "service_account", ResourceType.DATA, "private_data", PermissionAction.WRITE),
+    ]
+    
+    for subject, subject_type, resource_type, resource_id, action in test_cases:
+        has_permission = acm.check_permission(subject, subject_type, resource_type, resource_id, action)
+        account_name = analytics_sa.name if subject == analytics_sa.id else api_sa.name
+        print(f"{account_name} {action.value} {resource_type.value}:{resource_id} -> {'ALLOWED' if has_permission else 'DENIED'}")
+    
+    # 7. Test request authentication with headers
+    print("\n7. Testing request authentication...")
+    
+    if 'jwt_token' in locals():
+        # Test Bearer token
+        bearer_header = f"Bearer {jwt_token.token}"
+        token_result = acm.authenticate_and_authorize(bearer_header)
+        print(f"Bearer token auth: {'SUCCESS' if token_result else 'FAILED'}")
+        
+        # Test API key header
+        api_header = f"ApiKey {analytics_sa.api_key}"
+        api_result = acm.authenticate_and_authorize(api_header)
+        print(f"API key header auth: {'SUCCESS' if api_result else 'FAILED'}")
+    
+    # 8. List all resources
+    print("\n8. System summary...")
+    print(f"Total roles: {len(acm.role_manager.list_roles())}")
+    print(f"Total service accounts: {len(acm.service_account_manager.list_service_accounts())}")
+    print(f"Active tokens: {len(acm.token_manager.active_tokens)}")
+    
+    print("\nRoles:")
+    for role in acm.role_manager.list_roles():
+        print(f"  - {role.name} ({len(role.permissions)} permissions)")
+    
+    print("\nService Accounts:")
+    for sa in acm.service_account_manager.list_service_accounts():
+        status = "Active" if sa.is_active and not sa.is_expired() else "Inactive"
+        print(f"  - {sa.name} ({len(sa.roles)} roles) - {status}")
+    
+    print("\n=== System Ready ===")
