@@ -97,4 +97,104 @@ class RBACManager {
       'developer': {
         permissions: [
           'resources:read', 'resources:write',
+
           'deployments:read', 'deployments:write',
+          'logs:read', 'monitoring:read'
+        ],
+        description: 'Development and deployment access'
+      },
+      'viewer': {
+        permissions: [
+          'resources:read', 'logs:read', 'monitoring:read'
+        ],
+        description: 'Read-only access'
+      },
+      'billing_admin': {
+        permissions: [
+          'billing:read', 'billing:write',
+          'resources:read', 'usage:read'
+        ],
+        description: 'Billing and usage management'
+      }
+    };
+  }
+
+  hasPermission(userRole, userPermissions, requiredPermission) {
+    // Super admin has all permissions
+    if (userRole === 'super_admin') return true;
+
+    // Check if user has wildcard permission
+    if (userPermissions.includes('*')) return true;
+
+    // Check specific permission
+    if (userPermissions.includes(requiredPermission)) return true;
+
+    // Check wildcard resource permissions (e.g., 'resources:*' for 'resources:read')
+    const [resource, action] = requiredPermission.split(':');
+    if (userPermissions.includes(`${resource}:*`)) return true;
+
+    return false;
+  }
+
+  getRolePermissions(role) {
+    return this.roles[role]?.permissions || [];
+  }
+
+  validateRole(role) {
+    return Object.keys(this.roles).includes(role);
+  }
+}
+
+// OAuth2 Authorization Server
+class OAuth2Server {
+  constructor(tokenManager) {
+    this.tokenManager = tokenManager;
+    this.authorizationCodes = new Map(); // In production, use Redis
+    this.clients = new Map(); // In production, use database
+    this.codeExpiry = 10 * 60 * 1000; // 10 minutes
+  }
+
+  registerClient(clientId, clientSecret, redirectUris, scopes) {
+    this.clients.set(clientId, {
+      clientSecret: bcrypt.hashSync(clientSecret, 10),
+      redirectUris,
+      scopes,
+      createdAt: new Date()
+    });
+  }
+
+  validateClient(clientId, clientSecret) {
+    const client = this.clients.get(clientId);
+    if (!client) return false;
+    return bcrypt.compareSync(clientSecret, client.clientSecret);
+  }
+
+  generateAuthorizationCode(clientId, userId, redirectUri, scopes) {
+    const code = require('crypto').randomBytes(32).toString('hex');
+    this.authorizationCodes.set(code, {
+      clientId,
+      userId,
+      redirectUri,
+      scopes,
+      expiresAt: Date.now() + this.codeExpiry
+    });
+    
+    // Clean up expired codes
+    setTimeout(() => this.authorizationCodes.delete(code), this.codeExpiry);
+    
+    return code;
+  }
+
+  exchangeCodeForTokens(code, clientId, clientSecret, redirectUri) {
+    const authCode = this.authorizationCodes.get(code);
+    
+    if (!authCode) {
+      throw new AuthenticationError('Invalid authorization code');
+    }
+
+    if (authCode.expiresAt < Date.now()) {
+      this.authorizationCodes.delete(code);
+      throw new AuthenticationError('Authorization code expired');
+    }
+    if (authCode.clientId !== clientId || authCode.redirectUri !== redirectUri) {
+      throw new AuthenticationError('Invalid client or redirect URI');          
