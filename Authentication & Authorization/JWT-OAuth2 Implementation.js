@@ -198,3 +198,103 @@ class OAuth2Server {
     }
     if (authCode.clientId !== clientId || authCode.redirectUri !== redirectUri) {
       throw new AuthenticationError('Invalid client or redirect URI');          
+    }
+
+    if (!this.validateClient(clientId, clientSecret)) {
+      throw new AuthenticationError('Invalid client credentials');
+    }
+
+    // Delete the code after use
+    this.authorizationCodes.delete(code);
+
+    // Generate tokens (this would normally fetch user from database)
+    const user = { 
+      id: authCode.userId, 
+      role: 'developer', 
+      permissions: ['resources:read', 'resources:write'] 
+    };
+    
+    return this.tokenManager.generateTokenPair(user);
+  }
+}
+
+// Authentication Middleware
+const authenticateToken = (tokenManager) => {
+  return async (req, res, next) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        throw new AuthenticationError('Missing or invalid authorization header');
+      }
+
+      const token = authHeader.substring(7);
+      const decoded = await tokenManager.verifyAccessToken(token);
+      
+      req.user = decoded;
+      next();
+    } catch (error) {
+      res.status(error.statusCode || 401).json({
+        error: error.name,
+        message: error.message
+      });
+    }
+  };
+};
+
+// Authorization Middleware
+const requirePermission = (rbacManager, permission) => {
+  return (req, res, next) => {
+    try {
+      if (!req.user) {
+        throw new AuthenticationError('User not authenticated');
+      }
+
+      const hasPermission = rbacManager.hasPermission(
+        req.user.role,
+        req.user.permissions,
+        permission
+      );
+
+      if (!hasPermission) {
+        throw new AuthorizationError(`Insufficient permissions. Required: ${permission}`);
+      }
+
+      next();
+    } catch (error) {
+      res.status(error.statusCode || 403).json({
+        error: error.name,
+        message: error.message
+      });
+    }
+  };
+};
+
+// Multi-tenant Authorization
+const requireTenantAccess = (req, res, next) => {
+  try {
+    const requestedTenantId = req.params.tenantId || req.body.tenantId || req.query.tenantId;
+    
+    if (!requestedTenantId) {
+      throw new AuthorizationError('Tenant ID required');
+    }
+
+    // Super admins can access any tenant
+    if (req.user.role === 'super_admin') {
+      return next();
+    }
+
+    // Users can only access their own tenant
+    if (req.user.tenantId !== requestedTenantId) {
+      throw new AuthorizationError('Access denied to tenant resources');
+    }
+
+    next();
+  } catch (error) {
+    res.status(error.statusCode || 403).json({
+      error: error.name,
+      message: error.message
+    });
+  }
+};
+
+// Rate limiting for auth endpoints
