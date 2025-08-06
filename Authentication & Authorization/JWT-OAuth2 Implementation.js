@@ -298,3 +298,103 @@ const requireTenantAccess = (req, res, next) => {
 };
 
 // Rate limiting for auth endpoints
+const createAuthRateLimit = () => {
+  const attempts = new Map();
+  const maxAttempts = 5;
+  const windowMs = 15 * 60 * 1000; // 15 minutes
+
+  return (req, res, next) => {
+    const key = req.ip + ':' + (req.body.email || req.body.username || 'unknown');
+    const now = Date.now();
+    
+    if (!attempts.has(key)) {
+      attempts.set(key, { count: 1, resetTime: now + windowMs });
+      return next();
+    }
+
+    const attempt = attempts.get(key);
+    
+    if (now > attempt.resetTime) {
+      attempt.count = 1;
+      attempt.resetTime = now + windowMs;
+      return next();
+    }
+
+    if (attempt.count >= maxAttempts) {
+      return res.status(429).json({
+        error: 'TooManyRequests',
+        message: 'Too many authentication attempts. Please try again later.',
+        retryAfter: Math.ceil((attempt.resetTime - now) / 1000)
+      });
+    }
+
+    attempt.count++;
+    next();
+  };
+};
+
+module.exports = {
+  TokenManager,
+  RBACManager,
+  OAuth2Server,
+  authenticateToken,
+  requirePermission,
+  requireTenantAccess,
+  createAuthRateLimit,
+  AuthenticationError,
+  AuthorizationError
+};
+
+// auth/routes.js
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const { body, validationResult } = require('express-validator');
+const router = express.Router();
+
+class AuthRoutes {
+  constructor(tokenManager, rbacManager, oauth2Server) {
+    this.tokenManager = tokenManager;
+    this.rbacManager = rbacManager;
+    this.oauth2Server = oauth2Server;
+    this.users = new Map(); // In production, use database
+    this.refreshTokens = new Set(); // In production, use Redis
+  }
+
+  setupRoutes() {
+    // User Registration
+    router.post('/register', [
+      body('email').isEmail().normalizeEmail(),
+      body('password').isLength({ min: 8 }).matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/),
+      body('role').isIn(['admin', 'developer', 'viewer', 'billing_admin']),
+      body('tenantId').notEmpty().trim()
+    ], createAuthRateLimit(), async (req, res) => {
+      try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+          return res.status(400).json({
+            error: 'ValidationError',
+            message: 'Invalid input data',
+            details: errors.array()
+          });
+        }
+
+        const { email, password, role, tenantId, firstName, lastName } = req.body;
+
+        // Check if user already exists
+        if (this.users.has(email)) {
+          return res.status(409).json({
+            error: 'UserExists',
+            message: 'User with this email already exists'
+          });
+        }
+
+        // Validate role
+        if (!this.rbacManager.validateRole(role)) {
+          return res.status(400).json({
+            error: 'InvalidRole',
+            message: 'Invalid role specified'
+          });
+        }
+
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 12);
