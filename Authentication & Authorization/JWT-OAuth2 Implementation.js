@@ -398,3 +398,103 @@ class AuthRoutes {
 
         // Hash password
         const hashedPassword = await bcrypt.hash(password, 12);
+
+        // Create user
+        const user = {
+          id: require('crypto').randomUUID(),
+          email,
+          password: hashedPassword,
+          role,
+          tenantId,
+          firstName,
+          lastName,
+          permissions: this.rbacManager.getRolePermissions(role),
+          createdAt: new Date(),
+          isActive: true,
+          lastLogin: null
+        };
+
+        this.users.set(email, user);
+
+        // Generate tokens
+        const tokens = this.tokenManager.generateTokenPair(user);
+        this.refreshTokens.add(tokens.refreshToken);
+
+        res.status(201).json({
+          message: 'User registered successfully',
+          user: {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            tenantId: user.tenantId,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            permissions: user.permissions
+          },
+          tokens
+        });
+      } catch (error) {
+        console.error('Registration error:', error);
+        res.status(500).json({
+          error: 'InternalServerError',
+          message: 'Registration failed'
+        });
+      }
+    });
+
+    // User Login
+    router.post('/login', [
+      body('email').isEmail().normalizeEmail(),
+      body('password').notEmpty()
+    ], createAuthRateLimit(), async (req, res) => {
+      try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+          return res.status(400).json({
+            error: 'ValidationError',
+            message: 'Invalid input data',
+            details: errors.array()
+          });
+        }
+
+        const { email, password } = req.body;
+        const user = this.users.get(email);
+
+        if (!user || !user.isActive) {
+          return res.status(401).json({
+            error: 'AuthenticationError',
+            message: 'Invalid credentials'
+          });
+        }
+
+        const isValidPassword = await bcrypt.compare(password, user.password);
+        if (!isValidPassword) {
+          return res.status(401).json({
+            error: 'AuthenticationError',
+            message: 'Invalid credentials'
+          });
+        }
+
+        // Update last login
+        user.lastLogin = new Date();
+
+        // Generate tokens
+        const tokens = this.tokenManager.generateTokenPair(user);
+        this.refreshTokens.add(tokens.refreshToken);
+
+        res.json({
+          message: 'Login successful',
+          user: {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            tenantId: user.tenantId,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            permissions: user.permissions,
+            lastLogin: user.lastLogin
+          },
+          tokens
+        });
+      } catch (error) {
+        console.error('Login error:', error);
