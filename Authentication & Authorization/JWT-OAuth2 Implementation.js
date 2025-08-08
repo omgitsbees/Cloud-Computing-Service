@@ -498,3 +498,103 @@ class AuthRoutes {
         });
       } catch (error) {
         console.error('Login error:', error);
+        res.status(500).json({
+          error: 'InternalServerError',
+          message: 'Login failed'
+        });
+      }
+    });
+
+    // Token Refresh
+    router.post('/refresh', async (req, res) => {
+      try {
+        const { refreshToken } = req.body;
+        
+        if (!refreshToken || !this.refreshTokens.has(refreshToken)) {
+          return res.status(401).json({
+            error: 'AuthenticationError',
+            message: 'Invalid refresh token'
+          });
+        }
+
+        const decoded = await this.tokenManager.verifyRefreshToken(refreshToken);
+        const user = Array.from(this.users.values()).find(u => u.id === decoded.userId);
+
+        if (!user || !user.isActive) {
+          this.refreshTokens.delete(refreshToken);
+          return res.status(401).json({
+            error: 'AuthenticationError',
+            message: 'User not found or inactive'
+          });
+        }
+
+        // Remove old refresh token and generate new tokens
+        this.refreshTokens.delete(refreshToken);
+        const tokens = this.tokenManager.generateTokenPair(user);
+        this.refreshTokens.add(tokens.refreshToken);
+
+        res.json({
+          message: 'Token refreshed successfully',
+          tokens
+        });
+      } catch (error) {
+        console.error('Token refresh error:', error);
+        res.status(401).json({
+          error: 'AuthenticationError',
+          message: 'Token refresh failed'
+        });
+      }
+    });
+
+    // Logout
+    router.post('/logout', authenticateToken(this.tokenManager), (req, res) => {
+      try {
+        const { refreshToken } = req.body;
+        if (refreshToken) {
+          this.refreshTokens.delete(refreshToken);
+        }
+
+        res.json({
+          message: 'Logout successful'
+        });
+      } catch (error) {
+        console.error('Logout error:', error);
+        res.status(500).json({
+          error: 'InternalServerError',
+          message: 'Logout failed'
+        });
+      }
+    });
+
+    // OAuth2 Authorization Endpoint
+    router.get('/oauth/authorize', (req, res) => {
+      try {
+        const { client_id, redirect_uri, response_type, scope, state } = req.query;
+
+        if (response_type !== 'code') {
+          return res.status(400).json({
+            error: 'unsupported_response_type',
+            error_description: 'Only authorization code flow is supported'
+          });
+        }
+
+        if (!client_id || !redirect_uri) {
+          return res.status(400).json({
+            error: 'invalid_request',
+            error_description: 'Missing required parameters'
+          });
+        }
+
+        // In a real app, this would render a consent page
+        // For this example, we'll return the authorization URL
+        const authUrl = `/auth/oauth/consent?client_id=${client_id}&redirect_uri=${encodeURIComponent(redirect_uri)}&scope=${scope || ''}&state=${state || ''}`;
+        
+        res.json({
+          authorization_url: authUrl,
+          client_id,
+          redirect_uri,
+          scope: scope || 'read',
+          state
+        });
+      } catch (error) {
+        console.error('OAuth authorization error:', error);
