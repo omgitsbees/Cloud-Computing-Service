@@ -598,3 +598,154 @@ class AuthRoutes {
         });
       } catch (error) {
         console.error('OAuth authorization error:', error);
+        res.status(500).json({
+          error: 'server_error',
+          error_description: 'Authorization failed'
+        });
+      }
+    });
+
+    // OAuth2 Token Endpoint
+    router.post('/oauth/token', [
+      body('grant_type').isIn(['authorization_code', 'refresh_token']),
+      body('client_id').notEmpty(),
+      body('client_secret').notEmpty()
+    ], async (req, res) => {
+      try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+          return res.status(400).json({
+            error: 'invalid_request',
+            error_description: 'Invalid request parameters'
+          });
+        }
+
+        const { grant_type, client_id, client_secret, code, redirect_uri } = req.body;
+
+        if (grant_type === 'authorization_code') {
+          const tokens = this.oauth2Server.exchangeCodeForTokens(
+            code, client_id, client_secret, redirect_uri
+          );
+
+          res.json({
+            access_token: tokens.accessToken,
+            token_type: 'Bearer',
+            expires_in: tokens.expiresIn,
+            refresh_token: tokens.refreshToken
+          });
+        } else {
+          res.status(400).json({
+            error: 'unsupported_grant_type',
+            error_description: 'Grant type not supported'
+          });
+        }
+      } catch (error) {
+        console.error('OAuth token error:', error);
+        
+        if (error instanceof AuthenticationError) {
+          res.status(401).json({
+            error: 'invalid_grant',
+            error_description: error.message
+          });
+        } else {
+          res.status(500).json({
+            error: 'server_error',
+            error_description: 'Token exchange failed'
+          });
+        }
+      }
+    });
+
+    // Get Current User Profile
+    router.get('/profile', authenticateToken(this.tokenManager), (req, res) => {
+      try {
+        const user = Array.from(this.users.values()).find(u => u.id === req.user.userId);
+        
+        if (!user) {
+          return res.status(404).json({
+            error: 'UserNotFound',
+            message: 'User profile not found'
+          });
+        }
+
+        res.json({
+          user: {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            tenantId: user.tenantId,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            permissions: user.permissions,
+            createdAt: user.createdAt,
+            lastLogin: user.lastLogin
+          }
+        });
+      } catch (error) {
+        console.error('Profile fetch error:', error);
+        res.status(500).json({
+          error: 'InternalServerError',
+          message: 'Failed to fetch profile'
+        });
+      }
+    });
+
+    return router;
+  }
+}
+
+module.exports = AuthRoutes;
+
+// Example usage in main app
+/*
+const express = require('express');
+const { TokenManager, RBACManager, OAuth2Server } = require('./auth/middleware');
+const AuthRoutes = require('./auth/routes');
+
+const app = express();
+app.use(express.json());
+
+// Initialize authentication components
+const tokenManager = new TokenManager(
+  process.env.JWT_SECRET || 'your-jwt-secret',
+  process.env.JWT_REFRESH_SECRET || 'your-refresh-secret'
+);
+
+const rbacManager = new RBACManager();
+const oauth2Server = new OAuth2Server(tokenManager);
+
+// Register OAuth2 client
+oauth2Server.registerClient(
+  'cloud-dashboard',
+  'dashboard-secret',
+  ['http://localhost:3000/callback'],
+  ['read', 'write', 'admin']
+);
+
+// Setup auth routes
+const authRoutes = new AuthRoutes(tokenManager, rbacManager, oauth2Server);
+app.use('/auth', authRoutes.setupRoutes());
+
+// Protected route examples
+app.get('/api/resources', 
+  authenticateToken(tokenManager),
+  requirePermission(rbacManager, 'resources:read'),
+  requireTenantAccess,
+  (req, res) => {
+    res.json({ message: 'Access granted to resources', user: req.user });
+  }
+);
+
+app.post('/api/resources',
+  authenticateToken(tokenManager),
+  requirePermission(rbacManager, 'resources:write'),
+  requireTenantAccess,
+  (req, res) => {
+    res.json({ message: 'Resource created', user: req.user });
+  }
+);
+
+app.listen(3000, () => {
+  console.log('Authentication server running on port 3000');
+});
+*/
