@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Set
 from enum import Enum
 import json
 from datetime import datetime
-
+ 
 class NetworkProtocol(Enum):
     TCP = "tcp"
     UDP = "udp"
@@ -740,4 +740,5 @@ if __name__ == "__main__":
                   f"{log.source_ip}:{log.source_port} -> "
                   f"{log.dest_ip}:{log.dest_port} | "
                   f"{log.protocol.upper()} | {log.action} | "
+
                   f"{log.bytes} bytes, {log.packets} packets")
